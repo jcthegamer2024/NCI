@@ -1,0 +1,7 @@
+{
+  "required": true,
+  "package": "com.nexo.client.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "client": ["CreativeModeTabsInvoker"],
+  "injectors": { "defaultRequire": 1 }
+}

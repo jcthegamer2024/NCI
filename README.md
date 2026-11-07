@@ -60,6 +60,9 @@ Release artifacts are named with both mod version and minecraft version values:
 
 ## Development
 
+This branch targets Minecraft **26.3**, Fabric Loader **0.19.5+**, Fabric API
+**0.165.0+26.3**, and **Java 25** (including the Gradle JVM).
+
 Build locally with:
 
 ```bash
@@ -67,6 +70,41 @@ Build locally with:
 ```
 
 Output artifacts are written to `build/libs/`.
+
+### Migration from 1.21.11
+
+- Uses unobfuscated Minecraft names and Loom 1.17.21 with Gradle 9.6.0;
+  Yarn mappings and remapping tasks are no longer used.
+- Migrates creative tab registration and networking to the renamed Fabric APIs,
+  and packet buffers/codecs to the current Minecraft APIs.
+- Uses an `ItemStackTemplate` for the startup icon because item stacks require a
+  loaded world since 26.1. Synced stacks are still decoded with the connection's
+  registry-aware stream codec.
+- Forces a creative contents rebuild after sync even when vanilla's cached
+  display parameters are unchanged, refreshing search contents and pagination.
+- Accumulates legacy category packets and combines repeated category IDs rather
+  than keeping only the last packet. Up to 256 categories have reserved tab slots;
+  empty slots are hidden by the creative inventory.
+- Reviewed the 26.2 GUI/rendering changes and 26.3 SDL, registry, fuel, brewing,
+  and world generation changes. NCI does not implement these systems directly.
+
+The Nexo envelope protocol remains version 1. Embedded item stacks use Minecraft's
+version-specific network format: use a Nexo server compatible with 26.3. Protocol
+negotiation alone does not translate item components from a 1.21.11 server, and
+cross-version proxies must translate this custom payload explicitly.
+
+Legacy packets have no end-of-snapshot marker. Their contents accumulate until
+reconnect, so reconnect after removing items/categories on a legacy server to
+clear stale entries. Modern envelopes replace the complete snapshot.
+
+Migration references: [26.1](https://fabricmc.net/2026/03/14/261.html),
+[26.2](https://fabricmc.net/2026/06/15/262.html), and
+[26.3](https://fabricmc.net/2026/09/15/263.html).
+
+Before release, verify on a compatible Nexo server: initial sync, creative search,
+`/n rl items` while the inventory is open, permission denial, and reconnecting to
+a different server. A successful build and client startup do not validate these
+server interactions.
 
 ## Credits and Distribution
 
