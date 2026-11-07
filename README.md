@@ -57,6 +57,17 @@ Release artifacts are named with both mod version and minecraft version values:
   - Reconnect if the server did not push a fresh registry packet.
 - Mod loads but nothing syncs:
   - Check client logs for Nexo handshake/protocol warnings.
+- NCI armour looks vanilla but the same item from `/nexo inventory` works:
+  - Hold each version in your main hand and run the client command `/nci inspect`.
+  - This shows the held and matching cached equipment components in chat and
+    writes their complete component patches to `logs/latest.log` (search for
+    `NCI inspection`). Compare both before assuming an equipment asset ID.
+  - If the cached patch lacks `minecraft:equippable` while the working server
+    item includes it, the registry sender must serialize the complete item,
+    including its component patch. Sending only the base material, name, item
+    model and Nexo ID leaves the client with vanilla equipment defaults. Other
+    components such as `minecraft:repairable` must also be included; an item model
+    ID is not a substitute for an equipment asset ID.
 
 ## Development
 
@@ -71,6 +82,11 @@ Build locally with:
 
 Output artifacts are written to `build/libs/`.
 
+Run the creative search regression test with `./gradlew runSearchTest`. It launches
+a separate test client and temporary singleplayer world, checking vanilla name
+and tag searches, Nexo names, repeated syncs, and removal of old search entries.
+Test code is excluded from release jars.
+
 ### Migration from 1.21.11
 
 - Uses unobfuscated Minecraft names and Loom 1.17.21 with Gradle 9.6.0;
@@ -82,6 +98,9 @@ Output artifacts are written to `build/libs/`.
   registry-aware stream codec.
 - Forces a creative contents rebuild after sync even when vanilla's cached
   display parameters are unchanged, refreshing search contents and pagination.
+- Rebuilds the session's name and tag search indexes after updating tab contents.
+  This prevents an early NCI refresh from leaving creative search empty for both
+  vanilla and Nexo items.
 - Accumulates legacy category packets and combines repeated category IDs rather
   than keeping only the last packet. Up to 256 categories have reserved tab slots;
   empty slots are hidden by the creative inventory.

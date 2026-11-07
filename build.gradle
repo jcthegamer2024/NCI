@@ -16,6 +16,28 @@ repositories {
     }
 }
 
+sourceSets {
+    clientTest {
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+        runtimeClasspath += sourceSets.main.output + sourceSets.main.runtimeClasspath
+    }
+}
+
+loom {
+    mods {
+        nexo_client { sourceSet sourceSets.main }
+        nci_search_test { sourceSet sourceSets.clientTest }
+    }
+    runs {
+        searchTest {
+            client()
+            source sourceSets.clientTest
+            runDir 'build/search-test-run'
+            vmArg '-Dfabric.client.gametest'
+        }
+    }
+}
+
 dependencies {
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
     implementation "net.fabricmc:fabric-loader:${project.loader_version}"

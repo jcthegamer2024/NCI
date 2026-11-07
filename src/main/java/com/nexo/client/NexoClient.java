@@ -8,6 +8,8 @@ import java.util.Map;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
+import static net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.creativetab.v1.FabricCreativeModeTab;
@@ -65,6 +67,32 @@ public final class NexoClient implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
+        ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) ->
+                dispatcher.register(literal("nci").then(literal("inspect").executes(context -> {
+                    var player = context.getSource().getPlayer();
+                    ItemStack held = player.getMainHandItem();
+                    if (held.isEmpty()) {
+                        context.getSource().sendFeedback(Component.literal("[NCI] Hold the armour in your main hand first."));
+                        return 0;
+                    }
+                    LOGGER.info("NCI inspection HELD item={} components={}", held.getItem(), held.getComponentsPatch());
+                    context.getSource().sendFeedback(Component.literal("[NCI] Held equipment: " + held.get(DataComponents.EQUIPPABLE)));
+                    int matches = 0;
+                    for (TabGroupData group : syncedGroups.values()) {
+                        for (ItemStack cached : group.items()) {
+                            if (cached.getItem() == held.getItem()
+                                    && java.util.Objects.equals(cached.get(DataComponents.ITEM_MODEL), held.get(DataComponents.ITEM_MODEL))
+                                    && java.util.Objects.equals(cached.get(DataComponents.CUSTOM_DATA), held.get(DataComponents.CUSTOM_DATA))) {
+                                matches++;
+                                LOGGER.info("NCI inspection CACHED group={} components={} matchesHeld={}",
+                                        group.id(), cached.getComponentsPatch(), ItemStack.isSameItemSameComponents(cached, held));
+                                context.getSource().sendFeedback(Component.literal("[NCI] Cached equipment (" + group.id() + "): " + cached.get(DataComponents.EQUIPPABLE)));
+                            }
+                        }
+                    }
+                    context.getSource().sendFeedback(Component.literal("[NCI] Found " + matches + " cached matches. Component details written to latest.log."));
+                    return 1;
+                }))));
         PayloadTypeRegistry.serverboundPlay().register(HelloPayload.ID, HelloPayload.CODEC);
         PayloadTypeRegistry.clientboundPlay().register(RegistryPayload.ID, RegistryPayload.CODEC);
 
@@ -318,6 +346,13 @@ public final class NexoClient implements ClientModInitializer {
                 CreativeModeTabsInvoker.nexo$buildAllTabContents(
                         new CreativeModeTab.ItemDisplayParameters(features, opTab, lookup));
             }
+            // Updating the tabs also updates vanilla's cached display parameters. The
+            // creative screen can consequently skip its own rebuild, so we must update
+            // both session search indexes here, using vanilla and Nexo entries together.
+            var searchItems = List.copyOf(CreativeModeTabs.searchTab().getDisplayItems());
+            var searchTrees = player.connection.searchTrees();
+            searchTrees.updateCreativeTooltips(lookup, searchItems);
+            searchTrees.updateCreativeTags(searchItems);
             return true;
         } catch (RuntimeException e) {
             LOGGER.warn("Failed to refresh creative tab entries; will retry later", e);

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "nci_search_test",
+  "version": "1.0.0",
+  "name": "NCI Search Regression Test",
+  "environment": "client",
+  "entrypoints": {
+    "fabric-client-gametest": ["com.nexo.client.CreativeSearchTest"]
+  }
+}
