@@ -86,6 +86,12 @@ Run the creative search regression test with `./gradlew runSearchTest`. It launc
 a separate test client and temporary singleplayer world, checking vanilla name
 and tag searches, Nexo names, repeated syncs, and removal of old search entries.
 Test code is excluded from release jars.
+The test also checks cached tab icons and recovery from a session reset while a
+Nexo tab is selected in an open creative inventory.
+It also covers closing on a late page's shared Search tab, resetting the session
+while the screen is closed, and reopening with vanilla category tabs visible.
+To check ModernFix compatibility, supply its local jar with
+`./gradlew runSearchTest -PnciModernFixJar="/path/to/modernfix.jar"`.
 
 ### Migration from 1.21.11
 
@@ -101,7 +107,16 @@ Test code is excluded from release jars.
 - Rebuilds the session's name and tag search indexes after updating tab contents.
   This prevents an early NCI refresh from leaving creative search empty for both
   vanilla and Nexo items.
-- Accumulates legacy category packets and combines repeated category IDs rather
+- Clears synced categories at play-session initialization and disconnect, rejects
+  queued data from old connections, and rebuilds even before the new server sends
+  Nexo data. Tab icons and an open creative screen are refreshed too, returning
+  to a vanilla tab if the previous server's selected category no longer exists.
+- Checks the retained creative page when opening the screen as well, preventing
+  an old server's shared Search/Operator tab from reopening on an invalid page.
+- Invalidates ModernFix's per-tab contents cache during forced registry refreshes,
+  so an empty pre-sync inventory cannot keep all Nexo categories hidden.
+- Accumulates protocol 1 category packets in both legacy and versioned envelopes,
+  and combines repeated category IDs rather
   than keeping only the last packet. Up to 256 categories have reserved tab slots;
   empty slots are hidden by the creative inventory.
 - Reviewed the 26.2 GUI/rendering changes and 26.3 SDL, registry, fuel, brewing,
@@ -111,10 +126,15 @@ The Nexo envelope protocol remains version 1. Embedded item stacks use Minecraft
 version-specific network format: use a Nexo server compatible with 26.3. Protocol
 negotiation alone does not translate item components from a 1.21.11 server, and
 cross-version proxies must translate this custom payload explicitly.
+Malformed or partially decoded Nexo registry packets are discarded completely,
+and NCI disables sync for that play session instead of disconnecting the client.
+Vanilla inventory remains available. A new play session resets this protection.
+This is graceful rejection, not translation of 1.21.11 item data into 26.3 data.
 
-Legacy packets have no end-of-snapshot marker. Their contents accumulate until
-reconnect, so reconnect after removing items/categories on a legacy server to
-clear stale entries. Modern envelopes replace the complete snapshot.
+Protocol 1 packets have no end-of-snapshot marker. Their contents accumulate until
+a new play session, so reconnect after removing items/categories to clear stale
+entries. A versioned envelope (including server 1.1.1) can still contain only one
+category chunk; the server version does not indicate a complete snapshot.
 
 Migration references: [26.1](https://fabricmc.net/2026/03/14/261.html),
 [26.2](https://fabricmc.net/2026/06/15/262.html), and

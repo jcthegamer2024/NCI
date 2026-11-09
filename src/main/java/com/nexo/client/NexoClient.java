@@ -1,6 +1,11 @@
 package com.nexo.client;
 
 import com.nexo.client.mixin.CreativeModeTabsInvoker;
+import com.nexo.client.mixin.CreativeModeTabAccessor;
+import com.nexo.client.mixin.CreativeScreenInvoker;
+import net.minecraft.client.multiplayer.ClientPacketListener;
+import net.minecraft.client.gui.screens.inventory.CreativeModeInventoryScreen;
+import net.fabricmc.fabric.api.client.creativetab.v1.FabricCreativeModeInventoryScreen;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -64,6 +69,8 @@ public final class NexoClient implements ClientModInitializer {
     private static volatile boolean pendingGroupRefresh;
     private static int helloAttempts;
     private static int helloRetryCountdown;
+    private static ClientPacketListener activeConnection;
+    private static boolean syncDisabled;
 
     @Override
     public void onInitializeClient() {
@@ -103,23 +110,28 @@ public final class NexoClient implements ClientModInitializer {
         resetTabSlots();
 
         ClientPlayNetworking.registerGlobalReceiver(RegistryPayload.ID, (payload, context) -> {
+            var sourceConnection = context.player().connection;
             context.client().execute(() -> {
+                if (sourceConnection != activeConnection || context.client().getConnection() != sourceConnection) {
+                    return;
+                }
                 registryReceived = applyRegistryPayload(payload, context.client());
             });
         });
 
+        ClientPlayConnectionEvents.INIT.register((handler, client) -> beginSession(handler));
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
+            if (activeConnection == handler) {
+                beginSession(null);
+            }
+        });
         ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
-            boolean hadSyncedContent = hasSyncedContent();
-            clearSyncedState();
-            registryReceived = false;
-            pendingGroupRefresh = hadSyncedContent;
-            helloAttempts = 0;
-            helloRetryCountdown = 0;
             sendHello("join");
         });
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            if (!registryReceived && helloAttempts < MAX_HELLO_ATTEMPTS && client.getConnection() != null) {
+            if (!registryReceived && helloAttempts < MAX_HELLO_ATTEMPTS
+                    && activeConnection != null && client.getConnection() == activeConnection) {
                 helloRetryCountdown--;
                 if (helloRetryCountdown <= 0) {
                     sendHello("retry");
@@ -131,6 +143,16 @@ public final class NexoClient implements ClientModInitializer {
                 LOGGER.info("Refreshed creative tab display after registry sync");
             }
         });
+    }
+
+    private static void beginSession(ClientPacketListener connection) {
+        activeConnection = connection;
+        clearSyncedState();
+        registryReceived = false;
+        syncDisabled = false;
+        pendingGroupRefresh = true;
+        helloAttempts = 0;
+        helloRetryCountdown = 0;
     }
 
     private static void sendHello(String reason) {
@@ -148,6 +170,20 @@ public final class NexoClient implements ClientModInitializer {
     }
 
     private static boolean applyRegistryPayload(RegistryPayload payload, Minecraft client) {
+        if (syncDisabled) {
+            return true;
+        }
+        if ("incompatible-item-format".equals(payload.serverVersion())) {
+            syncDisabled = true;
+            clearSyncedState();
+            pendingGroupRefresh = true;
+            LOGGER.warn("Nexo sync disabled for this session: {}", payload.message());
+            if (client.player != null) {
+                client.player.sendSystemMessage(Component.literal(
+                        "[NCI] This server sent an incompatible inventory format. Nexo tabs are disabled until reconnect; vanilla inventory is available."));
+            }
+            return true;
+        }
         boolean hadSyncedContent = hasSyncedContent();
         if (!isProtocolSupported(payload.negotiatedProtocol())) {
             clearSyncedState();
@@ -180,7 +216,9 @@ public final class NexoClient implements ClientModInitializer {
             return true;
         }
 
-        rebuildSyncedGroups(payload.groups(), "legacy".equals(payload.serverVersion()));
+        // Protocol 1 sends category chunks in both legacy and versioned envelopes.
+        // A server-version field does not mark a complete registry snapshot.
+        rebuildSyncedGroups(payload.groups(), true);
 
         pendingGroupRefresh = true;
         LOGGER.info(
@@ -194,8 +232,8 @@ public final class NexoClient implements ClientModInitializer {
     }
 
     private static void rebuildSyncedGroups(List<TabGroupData> incomingGroups, boolean incremental) {
-        // Legacy servers send separate packets for categories and chunks of a category.
-        // Modern envelopes represent a complete snapshot instead.
+        // Session boundaries clear the previous server. Packets within that
+        // session may contain only one category or part of a category.
         Map<String, TabGroupData> rebuiltGroups = incremental
                 ? new LinkedHashMap<>(syncedGroups) : new LinkedHashMap<>();
         for (TabGroupData group : incomingGroups) {
@@ -340,11 +378,16 @@ public final class NexoClient implements ClientModInitializer {
         boolean opTab = player.canUseGameMasterBlocks();
 
         try {
+            for (var tab : CreativeModeTabs.allTabs()) {
+                ((CreativeModeTabAccessor) tab).nexo$setIcon(null);
+            }
             if (!CreativeModeTabs.tryRebuildTabContents(features, opTab, lookup)) {
-                // A server sync changes our output without changing vanilla's cached parameters.
-                // Rebuild all tabs so search contents and Fabric pagination also refresh.
+                // ModernFix memoizes each tab as well as vanilla's global cache.
+                // Give this forced build a fresh provider identity with the SAME
+                // registry contents, so both category and search tabs actually rebuild.
+                var refreshLookup = net.minecraft.core.HolderLookup.Provider.create(lookup.listRegistries());
                 CreativeModeTabsInvoker.nexo$buildAllTabContents(
-                        new CreativeModeTab.ItemDisplayParameters(features, opTab, lookup));
+                        new CreativeModeTab.ItemDisplayParameters(features, opTab, refreshLookup));
             }
             // Updating the tabs also updates vanilla's cached display parameters. The
             // creative screen can consequently skip its own rebuild, so we must update
@@ -353,6 +396,17 @@ public final class NexoClient implements ClientModInitializer {
             var searchTrees = player.connection.searchTrees();
             searchTrees.updateCreativeTooltips(lookup, searchItems);
             searchTrees.updateCreativeTags(searchItems);
+            if (client.gui.screen() instanceof CreativeModeInventoryScreen screen) {
+                var pages = (FabricCreativeModeInventoryScreen) screen;
+                var selected = pages.getSelectedTab();
+                if (!selected.shouldDisplay() || pages.getCurrentPage() >= pages.getPageCount()) {
+                    pages.switchToPage(0);
+                    pages.setSelectedTab(CreativeModeTabs.getDefaultTab());
+                } else {
+                    pages.switchToPage(pages.getPage(selected));
+                }
+                ((CreativeScreenInvoker) screen).nexo$refreshContents(pages.getSelectedTab().getDisplayItems());
+            }
             return true;
         } catch (RuntimeException e) {
             LOGGER.warn("Failed to refresh creative tab entries; will retry later", e);
@@ -430,6 +484,25 @@ public final class NexoClient implements ClientModInitializer {
                 StreamCodec.of(RegistryPayload::encode, RegistryPayload::decode);
 
         private static RegistryPayload decode(RegistryFriendlyByteBuf buf) {
+            try {
+                RegistryPayload payload = decodeContents(buf);
+                if (buf.isReadable()) {
+                    throw new IllegalArgumentException("Registry payload has " + buf.readableBytes() + " unread bytes");
+                }
+                return payload;
+            } catch (RuntimeException error) {
+                // Custom payloads are packet-bounded. Consume this rejected Nexo
+                // payload, never leave bytes for PacketDecoder to treat as a fatal
+                // framing error. Do not publish partially decoded item groups.
+                buf.skipBytes(buf.readableBytes());
+                LOGGER.warn("Rejected incompatible Nexo registry payload ({})", error.toString());
+                return new RegistryPayload(MIN_SUPPORTED_PROTOCOL, STATUS_INCOMPATIBLE,
+                        "Registry item data does not match Minecraft 26.3", "incompatible-item-format",
+                        List.of(), List.of());
+            }
+        }
+
+        private static RegistryPayload decodeContents(RegistryFriendlyByteBuf buf) {
             int first = buf.readVarInt();
 
             int status;
